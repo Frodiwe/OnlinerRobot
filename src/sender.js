@@ -32,6 +32,8 @@ class Sender {
     this.db = this.client.db()
     this.sessions = this.db.collection(this.sessionsCollectionName)
     this.apartments = this.db.collection(this.apartmentsCollectionName)
+    this.buildings = this.db.collection('buildings');
+    this.logs = this.db.collection('logs');
 
     await this.apartments.createIndex({ onliner_id: 1 })
 
@@ -57,6 +59,24 @@ class Sender {
     }
   }
 
+  async getBuildingInfo(address) {
+    const types = ['улица', 'переулок', 'проспект', 'тракт'];
+    const regex = /([а-яА-Я]+),\s*(улица|проспект|переулок|тракт)?\s*(.+?)\s*(улица|проспект|переулок|тракт)?,\s+([а-яА-Я0-9]+)/gmi
+    const parts = regex.exec(address);
+
+    if (!parts) {
+      return 'parsing_failed';
+    }
+
+    const info = await this.buildings.findOne({
+      'address.type': types.find(type => type === parts[2]) ? parts[2] : parts[4],
+      'address.street': parts[3],
+      'address.buildingNumber': parts[5],
+    });
+
+    return info ? {year: info.year, floors: info.floors} : 'address_not_found';
+  }
+
   async processUser (user) {
     if (!user.data || !user.data.url) {
       return
@@ -73,6 +93,15 @@ class Sender {
       let apartment = apartments[i]
       apartment.onliner_id = apartment.id
       delete apartment.id
+
+      let info = await this.getBuildingInfo(apartment.location.address)
+
+      if (typeof info === 'string') {
+        this.logs.updateOne({address: apartment.location.address, reason: info}, {upsert: true})
+      }
+      else {
+        apartment.location.info = info;
+      }
 
       let existingApartment = await this.apartments.findOne({
         onliner_id: apartment.onliner_id,
@@ -115,6 +144,11 @@ class Sender {
     message += `💵 $${apartment.price.converted.USD.amount}\n`
     message += `🚪 ${Sender.formatRentType(apartment.rent_type)}\n`
     message += `📍 ${apartment.location.address}\n`
+
+    if (apartment.location.info) {
+      message += `Year build: ${apartment.location.info.year}, floors: ${apartment.location.info.floors}\n`
+    }
+
     message += `🌟 ${createdAt}\n`
 
     if (updatedAt !== createdAt) {

@@ -1,6 +1,7 @@
 const Telegraf = require('telegraf')
 const { TelegrafMongoSession } = require('telegraf-session-mongodb')
 const { MongoClient } = require('mongodb')
+const buildings = require('./buildings')
 
 const bot = new Telegraf(process.env.BOT_TOKEN)
 const session = {}
@@ -29,14 +30,49 @@ bot.hears(/https:\/\/r.onliner.by\/ak\//ig, (ctx) => {
   return ctx.reply('Thanks, the link has been updated.')
 })
 
-MongoClient.connect(process.env.MONGO_URI, { useNewUrlParser: true }).
-  then((client) => {
-    const db = client.db()
-    const mongoSession = new TelegrafMongoSession(db, {
-      collectionName: process.env.SESSIONS_COLLECTION,
-    })
+function getParsedAddress(address) {
+    const types = ['улица', 'переулок', 'проспект', 'тракт'];
+    const regex = /(улица|проспект|переулок|тракт)?\s*(.+?)\s*(улица|проспект|переулок|тракт)?,\s+([а-яА-Я0-9]+)/gmi;
+    const parts = regex.exec(address);
 
-    session.middleware = mongoSession.middleware.bind(mongoSession)
-    bot.launch()
-  }).
-  catch(console.error)
+    return {
+        type: types.find(type => type === parts[1]) ? parts[1] : parts[3],
+        street: parts[2],
+        buildingNumber: parts[4].replace(' ', ''),
+    }
+}
+
+function seedBuildingsCollection(client) {
+  const db = client.db();
+
+  if (db.collection('buildings').findOne({})) {
+      return;
+  }
+
+  buildings
+      .forEach(building => {
+          db.collection('buildings').insertOne({
+              address: getParsedAddress(building.address),
+              year: building.year,
+              floors: building.floors,
+              types: building.types
+          });
+      });
+}
+
+function launchBot(client) {
+  const db = client.db()
+  const mongoSession = new TelegrafMongoSession(db, {
+    collectionName: process.env.SESSIONS_COLLECTION,
+  })
+
+  session.middleware = mongoSession.middleware.bind(mongoSession)
+  bot.launch()
+}
+
+MongoClient.connect(process.env.MONGO_URI, { useNewUrlParser: true })
+    .then(client => {
+      seedBuildingsCollection(client);
+      launchBot(client);
+    })
+    .catch(console.error)
